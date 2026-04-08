@@ -101,6 +101,7 @@ var COMMANDS = {
   // Debugging (requires chrome.debugger attach)
   tab_screenshot: takeScreenshot,
   tab_navigate: navigateTo,
+  tab_wait_navigation: waitForNavigation,
 };
 
 // --- Message Handling ---
@@ -162,6 +163,29 @@ function navigateTo(args, callback) {
   chrome.tabs.update(args.tabId, { url: args.url }, function () {
     callback({ success: true });
   });
+}
+
+function waitForNavigation(args, callback) {
+  var tabId = args.tabId;
+  var timeout = args.timeout || 10000;
+  var done = false;
+  function finish(result) {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    chrome.tabs.onUpdated.removeListener(listener);
+    callback(result);
+  }
+  var timer = setTimeout(function () {
+    finish({ error: "Navigation timeout after " + timeout + "ms" });
+  }, timeout);
+  function listener(updatedTabId, changeInfo, tab) {
+    if (updatedTabId !== tabId) return;
+    if (changeInfo.status === "complete") {
+      finish({ success: true, url: tab.url || "" });
+    }
+  }
+  chrome.tabs.onUpdated.addListener(listener);
 }
 
 // --- Injection Command ---
