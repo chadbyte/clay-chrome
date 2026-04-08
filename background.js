@@ -91,12 +91,15 @@ var COMMANDS = {
   // Injection
   tab_inject: injectTab,
 
-  // Debugging (requires chrome.debugger attach)
-  tab_screenshot: takeScreenshot,
+  // Page data (no debugger needed)
   tab_console: getConsoleLogs,
   tab_network: getNetworkLog,
   tab_dom: getDOM,
   tab_evaluate: evaluateScript,
+  tab_page_text: getPageText,
+
+  // Debugging (requires chrome.debugger attach)
+  tab_screenshot: takeScreenshot,
   tab_navigate: navigateTo,
 };
 
@@ -277,6 +280,15 @@ function getNetworkLog(args, callback) {
 function getDOM(args, callback) {
   executeInPage(args.tabId, function () {
     return { html: document.documentElement.outerHTML };
+  }, callback);
+}
+
+function getPageText(args, callback) {
+  // Direct page text extraction without eval (CSP-safe)
+  executeInPage(args.tabId, function () {
+    var text = document.body ? document.body.innerText : "";
+    if (text.length > 32768) text = text.substring(0, 32768);
+    return { text: text };
   }, callback);
 }
 
