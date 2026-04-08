@@ -3,6 +3,7 @@
 
 // --- State ---
 var clayTabIds = new Set();
+var injectedTabs = new Set();
 var allTabs = [];
 
 // --- Tab Tracking ---
@@ -10,27 +11,23 @@ var allTabs = [];
 chrome.tabs.onCreated.addListener(broadcastTabList);
 chrome.tabs.onRemoved.addListener(function (tabId) {
   clayTabIds.delete(tabId);
+  injectedTabs.delete(tabId);
   broadcastTabList();
 });
 chrome.tabs.onUpdated.addListener(function (tabId, changeInfo) {
+  // Page navigated — injection is lost, need to re-inject
+  if (changeInfo.status === "loading") {
+    injectedTabs.delete(tabId);
+  }
   if (changeInfo.url || changeInfo.title || changeInfo.status === "complete") {
     broadcastTabList();
   }
 });
 
 function isClayTab(tab) {
-  if (!tab.url) return false;
-  try {
-    var url = new URL(tab.url);
-    if (url.hostname.endsWith(".clay.studio")) return true;
-    if (url.hostname === "localhost" || url.hostname === "127.0.0.1") {
-      // Only treat as Clay tab if content script registered it
-      return clayTabIds.has(tab.id);
-    }
-  } catch (e) {
-    // ignore
-  }
-  return false;
+  // Only exclude tabs where the content script is actively registered
+  // (i.e. the tab that is running Clay and bridging to this extension)
+  return clayTabIds.has(tab.id);
 }
 
 function broadcastTabList() {
@@ -59,6 +56,30 @@ function broadcastTabList() {
   });
 }
 
+// --- Injection ---
+
+function ensureInjected(tabId, callback) {
+  if (injectedTabs.has(tabId)) {
+    callback(true);
+    return;
+  }
+  chrome.scripting.executeScript(
+    {
+      target: { tabId: tabId },
+      files: ["inject.js"],
+      world: "MAIN",
+    },
+    function () {
+      if (chrome.runtime.lastError) {
+        callback(false, chrome.runtime.lastError.message);
+        return;
+      }
+      injectedTabs.add(tabId);
+      callback(true);
+    }
+  );
+}
+
 // --- Commands ---
 
 var COMMANDS = {
@@ -66,6 +87,9 @@ var COMMANDS = {
   tab_open: openTab,
   tab_close: closeTab,
   tab_activate: activateTab,
+
+  // Injection
+  tab_inject: injectTab,
 
   // Debugging (requires chrome.debugger attach)
   tab_screenshot: takeScreenshot,
@@ -137,6 +161,15 @@ function navigateTo(args, callback) {
   });
 }
 
+// --- Injection Command ---
+
+function injectTab(args, callback) {
+  ensureInjected(args.tabId, function (ok, err) {
+    if (!ok) return callback({ error: err || "Injection failed" });
+    callback({ success: true });
+  });
+}
+
 // --- Debugger Commands ---
 
 function withDebugger(tabId, fn) {
@@ -159,101 +192,117 @@ function detachDebugger(tabId) {
 function takeScreenshot(args, callback) {
   withDebugger(args.tabId, function (tabId, err) {
     if (err) return callback({ error: err });
-    chrome.debugger.sendCommand(
-      { tabId: tabId },
-      "Page.captureScreenshot",
-      { format: "png", quality: 80 },
-      function (result) {
-        detachDebugger(tabId);
-        if (chrome.runtime.lastError || !result) {
-          return callback({ error: (chrome.runtime.lastError || {}).message || "Screenshot failed" });
+
+    function captureWithClip(clip) {
+      var params = { format: "png", quality: 80 };
+      if (clip) params.clip = clip;
+      chrome.debugger.sendCommand(
+        { tabId: tabId },
+        "Page.captureScreenshot",
+        params,
+        function (result) {
+          detachDebugger(tabId);
+          if (chrome.runtime.lastError || !result) {
+            return callback({ error: (chrome.runtime.lastError || {}).message || "Screenshot failed" });
+          }
+          callback({ image: result.data });
         }
-        callback({ image: result.data });
-      }
-    );
+      );
+    }
+
+    if (args.selector) {
+      // Get bounding box of the target element
+      chrome.debugger.sendCommand(
+        { tabId: tabId },
+        "Runtime.evaluate",
+        {
+          expression: "(function() { var el = document.querySelector(" + JSON.stringify(args.selector) + "); if (!el) return null; var r = el.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()",
+          returnByValue: true,
+        },
+        function (result) {
+          if (chrome.runtime.lastError || !result || !result.result || !result.result.value) {
+            // Element not found or error, fall back to full viewport
+            captureWithClip(null);
+            return;
+          }
+          var rect = result.result.value;
+          captureWithClip({ x: rect.x, y: rect.y, width: rect.width, height: rect.height, scale: 1 });
+        }
+      );
+    } else {
+      captureWithClip(null);
+    }
   });
 }
 
-function getConsoleLogs(args, callback) {
-  withDebugger(args.tabId, function (tabId, err) {
-    if (err) return callback({ error: err });
-    chrome.debugger.sendCommand(
-      { tabId: tabId },
-      "Runtime.evaluate",
-      {
-        expression: "JSON.stringify(window.__clay_console_buffer || [])",
-        returnByValue: true,
-      },
-      function (result) {
-        detachDebugger(tabId);
-        if (chrome.runtime.lastError || !result) {
-          return callback({ error: (chrome.runtime.lastError || {}).message || "Console read failed" });
-        }
-        callback({ logs: result.result.value });
+// --- Script execution (no debugger needed) ---
+// Uses chrome.scripting.executeScript in MAIN world to read page-context data.
+// This avoids debugger conflicts with DevTools.
+
+function executeInPage(tabId, func, callback) {
+  chrome.scripting.executeScript(
+    {
+      target: { tabId: tabId },
+      world: "MAIN",
+      func: func,
+    },
+    function (results) {
+      if (chrome.runtime.lastError) {
+        return callback({ error: chrome.runtime.lastError.message });
       }
-    );
+      if (!results || !results[0]) {
+        return callback({ error: "No result from script execution" });
+      }
+      callback(results[0].result);
+    }
+  );
+}
+
+function getConsoleLogs(args, callback) {
+  ensureInjected(args.tabId, function () {
+    executeInPage(args.tabId, function () {
+      return { logs: JSON.stringify(window.__clay_console_buffer || []) };
+    }, callback);
   });
 }
 
 function getNetworkLog(args, callback) {
-  withDebugger(args.tabId, function (tabId, err) {
-    if (err) return callback({ error: err });
-    chrome.debugger.sendCommand(
-      { tabId: tabId },
-      "Runtime.evaluate",
-      {
-        expression: "JSON.stringify(window.__clay_network_buffer || [])",
-        returnByValue: true,
-      },
-      function (result) {
-        detachDebugger(tabId);
-        if (chrome.runtime.lastError || !result) {
-          return callback({ error: (chrome.runtime.lastError || {}).message || "Network read failed" });
-        }
-        callback({ network: result.result.value });
-      }
-    );
+  ensureInjected(args.tabId, function () {
+    executeInPage(args.tabId, function () {
+      return { network: JSON.stringify(window.__clay_network_buffer || []) };
+    }, callback);
   });
 }
 
 function getDOM(args, callback) {
-  withDebugger(args.tabId, function (tabId, err) {
-    if (err) return callback({ error: err });
-    chrome.debugger.sendCommand(
-      { tabId: tabId },
-      "Runtime.evaluate",
-      {
-        expression: "document.documentElement.outerHTML",
-        returnByValue: true,
-      },
-      function (result) {
-        detachDebugger(tabId);
-        if (chrome.runtime.lastError || !result) {
-          return callback({ error: (chrome.runtime.lastError || {}).message || "DOM read failed" });
-        }
-        callback({ html: result.result.value });
-      }
-    );
-  });
+  executeInPage(args.tabId, function () {
+    return { html: document.documentElement.outerHTML };
+  }, callback);
 }
 
 function evaluateScript(args, callback) {
-  withDebugger(args.tabId, function (tabId, err) {
-    if (err) return callback({ error: err });
-    chrome.debugger.sendCommand(
-      { tabId: tabId },
-      "Runtime.evaluate",
-      {
-        expression: args.script,
-        returnByValue: true,
-      },
-      function (result) {
-        detachDebugger(tabId);
-        if (chrome.runtime.lastError || !result) {
-          return callback({ error: (chrome.runtime.lastError || {}).message || "Eval failed" });
+  // For arbitrary script evaluation, use a wrapper that evals the expression
+  chrome.scripting.executeScript(
+    {
+      target: { tabId: args.tabId },
+      world: "MAIN",
+      func: function (script) {
+        try {
+          return { value: eval(script) };
+        } catch (e) {
+          return { error: e.message };
         }
-        callback({ value: result.result.value });
+      },
+      args: [args.script],
+    },
+    function (results) {
+      if (chrome.runtime.lastError) {
+        return callback({ error: chrome.runtime.lastError.message });
       }
-    );
-  });
+      if (!results || !results[0]) {
+        return callback({ error: "No result from script execution" });
+      }
+      callback(results[0].result);
+    }
+  );
 }
