@@ -730,20 +730,32 @@ function mcpRelayToolsList(msg, clayTabId) {
 // --- Broadcast MCP server list to all Clay tabs ---
 
 function broadcastMcpServers() {
-  chrome.storage.local.get(["mcpServerToggles"], function (data) {
-    var toggles = data.mcpServerToggles || {};
-    var serverList = mcpServers.map(function (s) {
+  if (!mcpHostConnected || !mcpNativePort) {
+    broadcastToClayTabs({
+      type: "mcp_servers_available",
+      servers: [],
+      hostConnected: false
+    });
+    return;
+  }
+
+  // Fetch live server list from native host
+  mcpSendNative({ type: "get_servers" }, function (response) {
+    var servers = (response && response.servers) || [];
+    var serverList = servers.map(function (s) {
       return {
         name: s.name,
         transport: s.transport,
-        enabled: toggles[s.name] !== false
+        tools: s.tools || [],
+        enabled: true,
+        running: s.running
       };
     });
 
     broadcastToClayTabs({
       type: "mcp_servers_available",
       servers: serverList,
-      hostConnected: mcpHostConnected
+      hostConnected: true
     });
   });
 }
