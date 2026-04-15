@@ -54,16 +54,10 @@ function isClayTab(tab) {
 
 function broadcastTabList() {
   chrome.tabs.query({}, function (tabs) {
-    // Separate Clay tabs from non-Clay tabs
-    var clayTabs = [];
     allTabs = [];
 
     for (var i = 0; i < tabs.length; i++) {
-      if (isClayTab(tabs[i])) {
-        clayTabs.push(tabs[i].id);
-        // Also keep clayTabIds in sync
-        clayTabIds.add(tabs[i].id);
-      } else {
+      if (!isClayTab(tabs[i])) {
         allTabs.push({
           id: tabs[i].id,
           url: tabs[i].url || "",
@@ -73,13 +67,14 @@ function broadcastTabList() {
       }
     }
 
-    for (var j = 0; j < clayTabs.length; j++) {
-      chrome.tabs.sendMessage(clayTabs[j], {
-        type: "clay_ext_tab_list",
-        tabs: allTabs,
-      }).catch(function () {
-        // Tab may have closed or content script not ready
-      });
+    var msg = { type: "clay_ext_tab_list", tabs: allTabs };
+    var portIds = Object.keys(clayPorts);
+    for (var j = 0; j < portIds.length; j++) {
+      try {
+        clayPorts[portIds[j]].postMessage(msg);
+      } catch (e) {
+        delete clayPorts[portIds[j]];
+      }
     }
   });
 }
@@ -132,14 +127,65 @@ var COMMANDS = {
   tab_wait_navigation: waitForNavigation,
 };
 
-// --- Message Handling ---
+// --- Clay Tab Ports (long-lived connections from content scripts) ---
+
+var clayPorts = {}; // tabId -> port
+
+chrome.runtime.onConnect.addListener(function (port) {
+  if (port.name !== "clay-tab") return;
+
+  var tabId = port.sender && port.sender.tab && port.sender.tab.id;
+  if (!tabId) return;
+
+  clayPorts[tabId] = port;
+  clayTabIds.add(tabId);
+  broadcastTabList();
+  broadcastMcpServers();
+
+  port.onMessage.addListener(function (msg) {
+    // Command from Clay page (relayed by content script)
+    if (msg.type === "clay_ext_command") {
+      var handler = COMMANDS[msg.command];
+      if (handler) {
+        handler(msg.args, function (result) {
+          try {
+            port.postMessage({
+              type: "clay_ext_result",
+              requestId: msg.requestId,
+              result: result,
+            });
+          } catch (e) {
+            // Port disconnected
+          }
+        });
+      }
+    }
+
+    // MCP tool call from Clay page
+    if (msg.type === "mcp_tool_call") {
+      mcpRelayToolCall(msg, tabId);
+    }
+
+    // MCP tool list request from Clay page
+    if (msg.type === "mcp_tools_list") {
+      mcpRelayToolsList(msg, tabId);
+    }
+  });
+
+  port.onDisconnect.addListener(function () {
+    void chrome.runtime.lastError;
+    delete clayPorts[tabId];
+    clayTabIds.delete(tabId);
+  });
+});
+
+// --- Popup Message Handling (still uses one-off messages) ---
 
 chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
-  // --- Popup messages (no sender.tab) ---
   if (!sender.tab) {
     if (msg.type === "mcp_load_config") {
       mcpLoadConfig(msg.path, sendResponse);
-      return true; // async sendResponse
+      return true;
     }
     if (msg.type === "mcp_server_toggle") {
       mcpHandleToggle(msg.server, msg.enabled);
@@ -149,53 +195,6 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       mcpCheckHost(sendResponse);
       return true;
     }
-    return;
-  }
-
-  // --- Content script messages ---
-
-  // Auto-register: any message from a content script tab means it's a Clay tab
-  if (!clayTabIds.has(sender.tab.id)) {
-    clayTabIds.add(sender.tab.id);
-    broadcastTabList();
-    broadcastMcpServers();
-  }
-
-  // Explicit register (still handled for initial tab list broadcast)
-  if (msg.type === "clay_ext_register") {
-    return;
-  }
-
-  // Content script unregistered (Clay tab closed)
-  if (msg.type === "clay_ext_unregister") {
-    clayTabIds.delete(sender.tab.id);
-    return;
-  }
-
-  // Command from Clay page (relayed by content script)
-  if (msg.type === "clay_ext_command") {
-    var handler = COMMANDS[msg.command];
-    if (handler) {
-      handler(msg.args, function (result) {
-        chrome.tabs.sendMessage(sender.tab.id, {
-          type: "clay_ext_result",
-          requestId: msg.requestId,
-          result: result,
-        }).catch(function () {
-          // Clay tab may have closed
-        });
-      });
-    }
-  }
-
-  // MCP tool call from Clay page (server -> webapp -> extension -> native host)
-  if (msg.type === "mcp_tool_call") {
-    mcpRelayToolCall(msg, sender.tab.id);
-  }
-
-  // MCP tool list request from Clay page
-  if (msg.type === "mcp_tools_list") {
-    mcpRelayToolsList(msg, sender.tab.id);
   }
 });
 
@@ -708,24 +707,22 @@ function broadcastMcpServers() {
 // --- Utility: send message to a specific Clay tab ---
 
 function sendToClayTab(tabId, msg) {
-  chrome.tabs.sendMessage(tabId, {
-    type: "clay_ext_mcp",
-    payload: msg
-  }).catch(function () {
-    // Tab may have closed
-  });
+  var p = clayPorts[tabId];
+  if (p) {
+    try { p.postMessage(msg); } catch (e) { delete clayPorts[tabId]; }
+  }
 }
 
 // --- Utility: broadcast to all Clay tabs ---
 
 function broadcastToClayTabs(msg) {
-  for (var clayTabId of clayTabIds) {
-    chrome.tabs.sendMessage(clayTabId, {
-      type: "clay_ext_mcp",
-      payload: msg
-    }).catch(function () {
-      // Tab may have closed
-    });
+  var portIds = Object.keys(clayPorts);
+  for (var i = 0; i < portIds.length; i++) {
+    try {
+      clayPorts[portIds[i]].postMessage(msg);
+    } catch (e) {
+      delete clayPorts[portIds[i]];
+    }
   }
 }
 

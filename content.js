@@ -1,35 +1,18 @@
 // Clay Chrome Extension - Content Script
 // Injected into Clay tabs. Bridges background.js <-> Clay page.
+// Uses a long-lived port connection for reliable bidirectional messaging.
 
-// --- Safe message sender (survives extension reload) ---
+var port = null;
 
-function safeSend(msg) {
+function connectPort() {
   try {
-    chrome.runtime.sendMessage(msg);
+    port = chrome.runtime.connect({ name: "clay-tab" });
   } catch (e) {
-    // Extension context invalidated (extension was reloaded).
-    // Notify Clay page so it knows the extension is disconnected.
-    window.postMessage(
-      {
-        source: "clay-chrome-extension",
-        payload: { type: "clay_ext_disconnected" },
-      },
-      "*"
-    );
+    return;
   }
-}
 
-// Register with background service worker
-safeSend({ type: "clay_ext_register" });
-
-// Unregister on page unload
-window.addEventListener("beforeunload", function () {
-  safeSend({ type: "clay_ext_unregister" });
-});
-
-// Relay messages from background.js to Clay page
-chrome.runtime.onMessage.addListener(function (msg) {
-  if (msg.type === "clay_ext_tab_list" || msg.type === "clay_ext_result") {
+  // Messages from background -> Clay page
+  port.onMessage.addListener(function (msg) {
     window.postMessage(
       {
         source: "clay-chrome-extension",
@@ -37,25 +20,36 @@ chrome.runtime.onMessage.addListener(function (msg) {
       },
       "*"
     );
-  }
+  });
 
-  // MCP messages from background -> Clay page
-  if (msg.type === "clay_ext_mcp") {
+  port.onDisconnect.addListener(function () {
+    void chrome.runtime.lastError;
+    port = null;
+    // Notify Clay page that extension disconnected
     window.postMessage(
       {
         source: "clay-chrome-extension",
-        payload: msg.payload,
+        payload: { type: "clay_ext_disconnected" },
       },
       "*"
     );
-  }
-});
+  });
+}
+
+connectPort();
 
 // Relay messages from Clay page to background.js
 window.addEventListener("message", function (event) {
   if (event.source !== window) return;
   if (!event.data || event.data.source !== "clay-page") return;
 
-  var payload = event.data.payload;
-  safeSend(payload);
+  if (port) {
+    try {
+      port.postMessage(event.data.payload);
+    } catch (e) {
+      // Port disconnected, try to reconnect
+      connectPort();
+      if (port) port.postMessage(event.data.payload);
+    }
+  }
 });
