@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="header">
+    <img src="icons/icon-48.png" alt="Clay" class="logo">
+    <h1>Clay</h1>
+  </div>
+
+  <div class="section">
+    <div class="section-title">MCP Config File</div>
+    <div class="config-row">
+      <input type="text" id="configPath" placeholder="~/.claude/claude_desktop_config.json" spellcheck="false">
+      <button id="loadBtn" title="Load config">Load</button>
+    </div>
+    <div id="configStatus" class="status"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">MCP Servers</div>
+    <div id="serverList" class="server-list">
+      <div class="empty-state">No config file loaded.</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Native Host</div>
+    <div id="hostStatus" class="status">
+      <span class="dot dot-unknown"></span>
+      <span>Checking...</span>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

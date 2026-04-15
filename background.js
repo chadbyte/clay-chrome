@@ -1,10 +1,19 @@
 // Clay Chrome Extension - Background Service Worker
 // Tracks open tabs and relays commands between Clay page and browser
+// Bridges local MCP servers to Clay via Native Messaging
 
 // --- State ---
 var clayTabIds = new Set();
 var injectedTabs = new Set();
 var allTabs = [];
+
+// --- MCP State ---
+var mcpNativePort = null;
+var mcpServers = [];           // parsed from config: [{ name, transport, command, args, env, url }]
+var mcpServerToggles = {};     // { serverName: true/false }
+var mcpHostConnected = false;
+var mcpPendingCallbacks = {};  // callId -> callback
+var mcpCallCounter = 0;
 
 // --- Tab Tracking ---
 
@@ -107,12 +116,30 @@ var COMMANDS = {
 // --- Message Handling ---
 
 chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
-  if (!sender.tab) return;
+  // --- Popup messages (no sender.tab) ---
+  if (!sender.tab) {
+    if (msg.type === "mcp_load_config") {
+      mcpLoadConfig(msg.path, sendResponse);
+      return true; // async sendResponse
+    }
+    if (msg.type === "mcp_server_toggle") {
+      mcpHandleToggle(msg.server, msg.enabled);
+      return;
+    }
+    if (msg.type === "mcp_check_host") {
+      mcpCheckHost(sendResponse);
+      return true;
+    }
+    return;
+  }
+
+  // --- Content script messages ---
 
   // Content script registered (Clay tab found)
   if (msg.type === "clay_ext_register") {
     clayTabIds.add(sender.tab.id);
     broadcastTabList();
+    broadcastMcpServers(); // send MCP server list to new Clay tab
     return;
   }
 
@@ -136,6 +163,16 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
         });
       });
     }
+  }
+
+  // MCP tool call from Clay page (server -> webapp -> extension -> native host)
+  if (msg.type === "mcp_tool_call") {
+    mcpRelayToolCall(msg, sender.tab.id);
+  }
+
+  // MCP tool list request from Clay page
+  if (msg.type === "mcp_tools_list") {
+    mcpRelayToolsList(msg, sender.tab.id);
   }
 });
 
@@ -342,3 +379,334 @@ function evaluateScript(args, callback) {
     }
   );
 }
+
+// ============================================================
+// MCP Bridge - Native Messaging
+// ============================================================
+
+// --- Native Host Connection ---
+
+function mcpConnectNativeHost() {
+  if (mcpNativePort) return;
+
+  try {
+    mcpNativePort = chrome.runtime.connectNative("com.clay.mcp_bridge");
+  } catch (e) {
+    mcpHostConnected = false;
+    return;
+  }
+
+  mcpHostConnected = true;
+
+  mcpNativePort.onMessage.addListener(function (msg) {
+    mcpHandleNativeMessage(msg);
+  });
+
+  mcpNativePort.onDisconnect.addListener(function () {
+    mcpHostConnected = false;
+    mcpNativePort = null;
+
+    // Fail all pending callbacks
+    var ids = Object.keys(mcpPendingCallbacks);
+    for (var i = 0; i < ids.length; i++) {
+      var cb = mcpPendingCallbacks[ids[i]];
+      if (cb) cb({ error: "Native host disconnected" });
+    }
+    mcpPendingCallbacks = {};
+
+    // Notify Clay tabs that MCP is unavailable
+    broadcastMcpServers();
+  });
+}
+
+function mcpDisconnectNativeHost() {
+  if (mcpNativePort) {
+    mcpNativePort.disconnect();
+    mcpNativePort = null;
+    mcpHostConnected = false;
+  }
+}
+
+function mcpSendNative(msg, callback) {
+  if (!mcpNativePort) {
+    mcpConnectNativeHost();
+  }
+  if (!mcpNativePort) {
+    if (callback) callback({ error: "Native host not available. Install com.clay.mcp_bridge." });
+    return;
+  }
+
+  var callId = "mcp_" + (++mcpCallCounter);
+  msg.callId = callId;
+
+  if (callback) {
+    mcpPendingCallbacks[callId] = callback;
+    // Timeout after 30 seconds
+    setTimeout(function () {
+      if (mcpPendingCallbacks[callId]) {
+        mcpPendingCallbacks[callId]({ error: "Timeout waiting for native host response" });
+        delete mcpPendingCallbacks[callId];
+      }
+    }, 30000);
+  }
+
+  mcpNativePort.postMessage(msg);
+}
+
+// --- Handle messages from native host ---
+
+function mcpHandleNativeMessage(msg) {
+  // Response to a pending call
+  if (msg.callId && mcpPendingCallbacks[msg.callId]) {
+    var callback = mcpPendingCallbacks[msg.callId];
+    delete mcpPendingCallbacks[msg.callId];
+    callback(msg);
+    return;
+  }
+
+  // Unsolicited messages from native host
+  if (msg.type === "config_changed") {
+    // Config file changed on disk, re-parse
+    mcpServers = parseServerList(msg.servers || {});
+    chrome.storage.local.set({ mcpServers: mcpServers });
+    broadcastMcpServers();
+    return;
+  }
+
+  if (msg.type === "server_status") {
+    // A server process status changed (started, crashed, exited)
+    broadcastToClayTabs({
+      type: "mcp_server_status",
+      server: msg.server,
+      status: msg.status,
+      error: msg.error || null
+    });
+    return;
+  }
+}
+
+// --- Load config file via native host ---
+
+function mcpLoadConfig(path, sendResponse) {
+  mcpSendNative({
+    type: "read_config",
+    path: path
+  }, function (response) {
+    if (response.error) {
+      sendResponse({ error: response.error });
+      return;
+    }
+
+    mcpServers = parseServerList(response.servers || {});
+    chrome.storage.local.set({ mcpServers: mcpServers });
+
+    // Start watching the config file
+    mcpSendNative({ type: "watch_config", path: path });
+
+    sendResponse({ servers: mcpServers });
+    broadcastMcpServers();
+  });
+}
+
+// --- Parse mcpServers object from config into flat list ---
+
+function parseServerList(serversObj) {
+  var list = [];
+  var names = Object.keys(serversObj);
+  for (var i = 0; i < names.length; i++) {
+    var name = names[i];
+    var cfg = serversObj[name];
+    var entry = { name: name };
+
+    if (cfg.url) {
+      entry.transport = "http";
+      entry.url = cfg.url;
+    } else {
+      entry.transport = "stdio";
+      entry.command = cfg.command || "";
+      entry.args = cfg.args || [];
+      entry.env = cfg.env || {};
+    }
+
+    list.push(entry);
+  }
+  return list;
+}
+
+// --- Toggle server on/off ---
+
+function mcpHandleToggle(serverName, enabled) {
+  mcpServerToggles[serverName] = enabled;
+  chrome.storage.local.set({ mcpServerToggles: mcpServerToggles });
+
+  if (enabled) {
+    // Tell native host to spawn the server
+    var server = mcpServers.find(function (s) { return s.name === serverName; });
+    if (server && server.transport === "stdio") {
+      mcpSendNative({
+        type: "spawn_server",
+        server: serverName,
+        command: server.command,
+        args: server.args,
+        env: server.env
+      });
+    }
+  } else {
+    // Tell native host to kill the server
+    mcpSendNative({
+      type: "kill_server",
+      server: serverName
+    });
+  }
+
+  broadcastMcpServers();
+}
+
+// --- Check native host connectivity ---
+
+function mcpCheckHost(sendResponse) {
+  if (mcpHostConnected && mcpNativePort) {
+    sendResponse({ connected: true });
+    return;
+  }
+
+  // Try to connect
+  mcpConnectNativeHost();
+
+  if (mcpHostConnected) {
+    // Ping to verify
+    mcpSendNative({ type: "ping" }, function (response) {
+      if (response && response.type === "pong") {
+        sendResponse({ connected: true });
+      } else {
+        sendResponse({ connected: false, error: response.error || "Unexpected response" });
+      }
+    });
+  } else {
+    var errorMsg = "Native host not found. Install com.clay.mcp_bridge.";
+    if (chrome.runtime.lastError) {
+      errorMsg = chrome.runtime.lastError.message;
+    }
+    sendResponse({ connected: false, error: errorMsg });
+  }
+}
+
+// --- Relay MCP tool call from Clay page to native host ---
+
+function mcpRelayToolCall(msg, clayTabId) {
+  var serverName = msg.server;
+
+  // Check if server is a local HTTP server (handle directly from webapp)
+  var server = mcpServers.find(function (s) { return s.name === serverName; });
+  if (!server) {
+    sendToClayTab(clayTabId, {
+      type: "mcp_tool_result",
+      callId: msg.callId,
+      error: "Unknown MCP server: " + serverName
+    });
+    return;
+  }
+
+  // HTTP servers are called directly from webapp, shouldn't reach here
+  // But handle gracefully if they do
+  if (server.transport === "http") {
+    sendToClayTab(clayTabId, {
+      type: "mcp_tool_result",
+      callId: msg.callId,
+      error: "HTTP MCP servers should be called directly from webapp via fetch"
+    });
+    return;
+  }
+
+  // stdio server: relay through native host
+  mcpSendNative({
+    type: "mcp_request",
+    server: serverName,
+    method: msg.method,
+    params: msg.params
+  }, function (response) {
+    sendToClayTab(clayTabId, {
+      type: "mcp_tool_result",
+      callId: msg.callId,
+      result: response.result || null,
+      error: response.error || null
+    });
+  });
+}
+
+// --- Relay MCP tools/list request ---
+
+function mcpRelayToolsList(msg, clayTabId) {
+  var serverName = msg.server;
+
+  mcpSendNative({
+    type: "mcp_request",
+    server: serverName,
+    method: "tools/list",
+    params: {}
+  }, function (response) {
+    sendToClayTab(clayTabId, {
+      type: "mcp_tools_list_result",
+      callId: msg.callId,
+      server: serverName,
+      result: response.result || null,
+      error: response.error || null
+    });
+  });
+}
+
+// --- Broadcast MCP server list to all Clay tabs ---
+
+function broadcastMcpServers() {
+  chrome.storage.local.get(["mcpServerToggles"], function (data) {
+    var toggles = data.mcpServerToggles || {};
+    var serverList = mcpServers.map(function (s) {
+      return {
+        name: s.name,
+        transport: s.transport,
+        enabled: toggles[s.name] !== false
+      };
+    });
+
+    broadcastToClayTabs({
+      type: "mcp_servers_available",
+      servers: serverList,
+      hostConnected: mcpHostConnected
+    });
+  });
+}
+
+// --- Utility: send message to a specific Clay tab ---
+
+function sendToClayTab(tabId, msg) {
+  chrome.tabs.sendMessage(tabId, {
+    type: "clay_ext_mcp",
+    payload: msg
+  }).catch(function () {
+    // Tab may have closed
+  });
+}
+
+// --- Utility: broadcast to all Clay tabs ---
+
+function broadcastToClayTabs(msg) {
+  for (var clayTabId of clayTabIds) {
+    chrome.tabs.sendMessage(clayTabId, {
+      type: "clay_ext_mcp",
+      payload: msg
+    }).catch(function () {
+      // Tab may have closed
+    });
+  }
+}
+
+// --- Restore saved toggles on startup ---
+
+chrome.storage.local.get(["mcpServers", "mcpServerToggles"], function (data) {
+  if (data.mcpServers) {
+    mcpServers = data.mcpServers;
+  }
+  if (data.mcpServerToggles) {
+    mcpServerToggles = data.mcpServerToggles;
+  }
+});
