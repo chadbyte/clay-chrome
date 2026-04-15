@@ -162,7 +162,7 @@ chrome.runtime.onConnect.addListener(function (port) {
     }
 
     // MCP tool call from Clay page
-    if (msg.type === "mcp_tool_call") {
+    if (msg.type === "mcp_tool_call" || msg.type === "clay_mcp_tool_call") {
       mcpRelayToolCall(msg, tabId);
     }
 
