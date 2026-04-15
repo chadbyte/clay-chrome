@@ -389,20 +389,16 @@ function evaluateScript(args, callback) {
 function mcpConnectNativeHost() {
   if (mcpNativePort) return;
 
-  try {
-    mcpNativePort = chrome.runtime.connectNative("com.clay.mcp_bridge");
-  } catch (e) {
-    mcpHostConnected = false;
-    return;
-  }
-
-  mcpHostConnected = true;
+  mcpNativePort = chrome.runtime.connectNative("com.clay.mcp_bridge");
 
   mcpNativePort.onMessage.addListener(function (msg) {
     mcpHandleNativeMessage(msg);
   });
 
   mcpNativePort.onDisconnect.addListener(function () {
+    // Read lastError to suppress "Unchecked runtime.lastError"
+    void chrome.runtime.lastError;
+
     mcpHostConnected = false;
     mcpNativePort = null;
 
@@ -417,6 +413,11 @@ function mcpConnectNativeHost() {
     // Notify Clay tabs that MCP is unavailable
     broadcastMcpServers();
   });
+
+  // If onDisconnect fires synchronously (host not found), port is already null
+  if (mcpNativePort) {
+    mcpHostConnected = true;
+  }
 }
 
 function mcpDisconnectNativeHost() {
@@ -566,15 +567,7 @@ function mcpHandleToggle(serverName, enabled) {
 
 function mcpCheckHost(sendResponse) {
   if (mcpHostConnected && mcpNativePort) {
-    sendResponse({ connected: true });
-    return;
-  }
-
-  // Try to connect
-  mcpConnectNativeHost();
-
-  if (mcpHostConnected) {
-    // Ping to verify
+    // Already connected, ping to verify
     mcpSendNative({ type: "ping" }, function (response) {
       if (response && response.type === "pong") {
         sendResponse({ connected: true });
@@ -582,13 +575,26 @@ function mcpCheckHost(sendResponse) {
         sendResponse({ connected: false, error: response.error || "Unexpected response" });
       }
     });
-  } else {
-    var errorMsg = "Native host not found. Install com.clay.mcp_bridge.";
-    if (chrome.runtime.lastError) {
-      errorMsg = chrome.runtime.lastError.message;
-    }
-    sendResponse({ connected: false, error: errorMsg });
+    return;
   }
+
+  // Try to connect, then wait briefly for disconnect event
+  mcpConnectNativeHost();
+
+  // Give onDisconnect a tick to fire if host is missing
+  setTimeout(function () {
+    if (mcpHostConnected && mcpNativePort) {
+      mcpSendNative({ type: "ping" }, function (response) {
+        if (response && response.type === "pong") {
+          sendResponse({ connected: true });
+        } else {
+          sendResponse({ connected: false, error: response.error || "Unexpected response" });
+        }
+      });
+    } else {
+      sendResponse({ connected: false, error: "Native host not found. Install com.clay.mcp_bridge." });
+    }
+  }, 100);
 }
 
 // --- Relay MCP tool call from Clay page to native host ---
