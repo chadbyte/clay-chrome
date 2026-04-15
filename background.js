@@ -541,13 +541,13 @@ function mcpHandleNativeMessage(msg) {
   }
 
   if (msg.type === "server_status") {
-    // A server process status changed (started, crashed, exited)
-    broadcastToClayTabs({
-      type: "mcp_server_status",
-      server: msg.server,
-      status: msg.status,
-      error: msg.error || null
-    });
+    broadcastMcpServers();
+    return;
+  }
+
+  if (msg.type === "server_ready") {
+    // A server finished MCP handshake and is ready with tools
+    broadcastMcpServers();
     return;
   }
 }
