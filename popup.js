@@ -9,6 +9,7 @@ var cancelAddBtn = document.getElementById("cancelAddBtn");
 var saveServerBtn = document.getElementById("saveServerBtn");
 var serverNameInput = document.getElementById("serverName");
 var serverPackageInput = document.getElementById("serverPackage");
+var serverArgsInput = document.getElementById("serverArgs");
 var envFieldsEl = document.getElementById("envFields");
 var addEnvBtn = document.getElementById("addEnvBtn");
 var importPathInput = document.getElementById("importPath");
@@ -86,6 +87,7 @@ addServerBtn.addEventListener("click", function () {
   addForm.classList.remove("hidden");
   serverNameInput.value = "";
   serverPackageInput.value = "";
+  serverArgsInput.value = "";
   envFieldsEl.innerHTML = "";
   serverNameInput.focus();
 });
@@ -116,6 +118,15 @@ saveServerBtn.addEventListener("click", function () {
   var pkg = serverPackageInput.value.trim();
   if (!name || !pkg) return;
 
+  var extraArgs = serverArgsInput.value.trim();
+  var args = ["-y", pkg];
+  if (extraArgs) {
+    var parts = extraArgs.split(/\s+/);
+    for (var ai = 0; ai < parts.length; ai++) {
+      if (parts[ai]) args.push(parts[ai]);
+    }
+  }
+
   var env = {};
   envFieldsEl.querySelectorAll(".env-row").forEach(function (row) {
     var k = row.querySelector(".env-key").value.trim();
@@ -127,7 +138,7 @@ saveServerBtn.addEventListener("click", function () {
     type: "mcp_add_server",
     name: name,
     command: "npx",
-    args: ["-y", pkg],
+    args: args,
     env: env
   }, function (response) {
     if (chrome.runtime.lastError || (response && response.error)) {
