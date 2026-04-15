@@ -135,11 +135,15 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
 
   // --- Content script messages ---
 
-  // Content script registered (Clay tab found)
-  if (msg.type === "clay_ext_register") {
+  // Auto-register: any message from a content script tab means it's a Clay tab
+  if (!clayTabIds.has(sender.tab.id)) {
     clayTabIds.add(sender.tab.id);
     broadcastTabList();
-    broadcastMcpServers(); // send MCP server list to new Clay tab
+    broadcastMcpServers();
+  }
+
+  // Explicit register (still handled for initial tab list broadcast)
+  if (msg.type === "clay_ext_register") {
     return;
   }
 
