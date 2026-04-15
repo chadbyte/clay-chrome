@@ -214,13 +214,16 @@ function checkNativeHost() {
       hostStatusEl.innerHTML =
         '<span class="dot dot-error"></span>' +
         '<span>Not installed</span>';
-      // Show install command below
-      var existing = document.getElementById("hostInstallCmd");
+      // Show install guide below
+      var existing = document.getElementById("hostInstallGuide");
       if (!existing) {
         var guide = document.createElement("div");
-        guide.id = "hostInstallCmd";
-        guide.style.cssText = "margin-top:6px;font-size:11px;color:var(--text-dim)";
-        guide.innerHTML = 'Run: <code style="background:var(--bg-card);padding:2px 6px;border-radius:4px;font-size:11px;cursor:pointer" title="Click to copy">' + escapeHtml(cmd) + '</code>';
+        guide.id = "hostInstallGuide";
+        guide.style.cssText = "margin-top:8px;font-size:11px;color:var(--text-dim);line-height:1.5";
+        guide.innerHTML =
+          '<div style="margin-bottom:4px">Run in your terminal:</div>' +
+          '<code style="display:block;background:var(--bg-card);padding:6px 8px;border-radius:5px;font-size:11px;cursor:pointer;border:1px solid var(--border)" title="Click to copy">' + escapeHtml(cmd) + '</code>' +
+          '<div style="margin-top:6px;color:var(--text-dimmer)">Then restart your browser.</div>';
         guide.querySelector("code").addEventListener("click", function () {
           navigator.clipboard.writeText(cmd).then(function () {
             guide.querySelector("code").textContent = "Copied!";
