@@ -140,7 +140,7 @@ function checkNativeHost() {
     } else {
       hostStatusEl.innerHTML =
         '<span class="dot dot-error"></span>' +
-        '<span>' + escapeHtml(response.error || "Not connected") + '</span>';
+        '<span>Not installed. Set up in Clay settings.</span>';
     }
   });
 }

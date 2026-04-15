@@ -67,7 +67,7 @@ function broadcastTabList() {
       }
     }
 
-    var msg = { type: "clay_ext_tab_list", tabs: allTabs };
+    var msg = { type: "clay_ext_tab_list", tabs: allTabs, extensionId: chrome.runtime.id };
     var portIds = Object.keys(clayPorts);
     for (var j = 0; j < portIds.length; j++) {
       try {
