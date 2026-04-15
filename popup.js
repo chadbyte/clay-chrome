@@ -209,9 +209,26 @@ function checkNativeHost() {
         '<span class="dot dot-ok"></span>' +
         '<span>Connected</span>';
     } else {
+      var extId = chrome.runtime.id;
+      var cmd = "npx clay-mcp-bridge install " + extId;
       hostStatusEl.innerHTML =
         '<span class="dot dot-error"></span>' +
-        '<span>Not installed. Set up in Clay settings.</span>';
+        '<span>Not installed</span>';
+      // Show install command below
+      var existing = document.getElementById("hostInstallCmd");
+      if (!existing) {
+        var guide = document.createElement("div");
+        guide.id = "hostInstallCmd";
+        guide.style.cssText = "margin-top:6px;font-size:11px;color:var(--text-dim)";
+        guide.innerHTML = 'Run: <code style="background:var(--bg-card);padding:2px 6px;border-radius:4px;font-size:11px;cursor:pointer" title="Click to copy">' + escapeHtml(cmd) + '</code>';
+        guide.querySelector("code").addEventListener("click", function () {
+          navigator.clipboard.writeText(cmd).then(function () {
+            guide.querySelector("code").textContent = "Copied!";
+            setTimeout(function () { guide.querySelector("code").textContent = cmd; }, 1500);
+          });
+        });
+        hostStatusEl.parentNode.appendChild(guide);
+      }
     }
   });
 }
