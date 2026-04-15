@@ -183,16 +183,60 @@ chrome.runtime.onConnect.addListener(function (port) {
 
 chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   if (!sender.tab) {
-    if (msg.type === "mcp_load_config") {
-      mcpLoadConfig(msg.path, sendResponse);
-      return true;
-    }
-    if (msg.type === "mcp_server_toggle") {
-      mcpHandleToggle(msg.server, msg.enabled);
-      return;
-    }
     if (msg.type === "mcp_check_host") {
       mcpCheckHost(sendResponse);
+      return true;
+    }
+
+    // Server CRUD: relay to native host
+    if (msg.type === "mcp_add_server") {
+      mcpSendNative({
+        type: "add_server",
+        name: msg.name,
+        command: msg.command,
+        args: msg.args,
+        env: msg.env
+      }, function (response) {
+        sendResponse(response);
+        broadcastMcpServers();
+      });
+      return true;
+    }
+    if (msg.type === "mcp_remove_server") {
+      mcpSendNative({
+        type: "remove_server",
+        name: msg.name
+      }, function (response) {
+        sendResponse(response);
+        broadcastMcpServers();
+      });
+      return true;
+    }
+    if (msg.type === "mcp_get_servers") {
+      mcpSendNative({ type: "get_servers" }, sendResponse);
+      return true;
+    }
+
+    // Import external config
+    if (msg.type === "mcp_import_config") {
+      mcpSendNative({
+        type: "import_config",
+        path: msg.path
+      }, sendResponse);
+      return true;
+    }
+    if (msg.type === "mcp_get_imports") {
+      mcpSendNative({ type: "get_imports" }, sendResponse);
+      return true;
+    }
+    if (msg.type === "mcp_remove_import") {
+      mcpSendNative({
+        type: "remove_import",
+        path: msg.path
+      }, function (response) {
+        sendResponse(response);
+        broadcastMcpServers();
+      });
       return true;
     }
   }

@@ -11,19 +11,36 @@
   </div>
 
   <div class="section">
-    <div class="section-title">MCP Config File</div>
-    <div class="config-row">
-      <input type="text" id="configPath" placeholder="~/.claude/claude_desktop_config.json" spellcheck="false">
-      <button id="loadBtn" title="Load config">Load</button>
+    <div class="section-title">
+      MCP Servers
+      <button id="addServerBtn" class="add-btn" title="Add server">+</button>
     </div>
-    <div id="configStatus" class="status"></div>
+    <div id="serverList" class="server-list">
+      <div class="empty-state">No servers configured.</div>
+    </div>
+  </div>
+
+  <!-- Add Server Form (hidden by default) -->
+  <div id="addForm" class="section add-form hidden">
+    <div class="section-title">Add Server</div>
+    <input type="text" id="serverName" placeholder="Name (e.g. github)" spellcheck="false">
+    <input type="text" id="serverPackage" placeholder="npm package (e.g. @modelcontextprotocol/server-github)" spellcheck="false">
+    <div id="envFields" class="env-fields"></div>
+    <button id="addEnvBtn" class="link-btn">+ Add env variable</button>
+    <div class="form-actions">
+      <button id="cancelAddBtn" class="btn-secondary">Cancel</button>
+      <button id="saveServerBtn" class="btn-primary">Add</button>
+    </div>
   </div>
 
   <div class="section">
-    <div class="section-title">MCP Servers</div>
-    <div id="serverList" class="server-list">
-      <div class="empty-state">No config file loaded.</div>
+    <div class="section-title">Import External Config</div>
+    <div class="config-row">
+      <input type="text" id="importPath" placeholder="~/.claude/claude_desktop_config.json" spellcheck="false">
+      <button id="importBtn" title="Import">Import</button>
     </div>
+    <div id="importStatus" class="status"></div>
+    <div id="importedPaths" class="imported-paths"></div>
   </div>
 
   <div class="section">

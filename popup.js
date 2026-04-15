@@ -1,123 +1,194 @@
 // Clay Chrome Extension - Popup
-// MCP config file management and server toggle UI
+// MCP server management: add/remove servers, import external configs
 
-var configPathInput = document.getElementById("configPath");
-var loadBtn = document.getElementById("loadBtn");
-var configStatus = document.getElementById("configStatus");
 var serverListEl = document.getElementById("serverList");
 var hostStatusEl = document.getElementById("hostStatus");
+var addForm = document.getElementById("addForm");
+var addServerBtn = document.getElementById("addServerBtn");
+var cancelAddBtn = document.getElementById("cancelAddBtn");
+var saveServerBtn = document.getElementById("saveServerBtn");
+var serverNameInput = document.getElementById("serverName");
+var serverPackageInput = document.getElementById("serverPackage");
+var envFieldsEl = document.getElementById("envFields");
+var addEnvBtn = document.getElementById("addEnvBtn");
+var importPathInput = document.getElementById("importPath");
+var importBtn = document.getElementById("importBtn");
+var importStatus = document.getElementById("importStatus");
+var importedPathsEl = document.getElementById("importedPaths");
 
 // --- Init ---
 
-chrome.storage.local.get(["mcpConfigPath", "mcpServers", "mcpServerToggles"], function (data) {
-  if (data.mcpConfigPath) {
-    configPathInput.value = data.mcpConfigPath;
-  }
-  if (data.mcpServers && data.mcpServers.length > 0) {
-    renderServerList(data.mcpServers, data.mcpServerToggles || {});
-  }
-  checkNativeHost();
-});
+checkNativeHost();
+loadServers();
+loadImportedPaths();
 
-// --- Load Config ---
+// --- Server List ---
 
-loadBtn.addEventListener("click", function () {
-  var path = configPathInput.value.trim();
-  if (!path) return;
-
-  loadBtn.disabled = true;
-  configStatus.className = "status";
-  configStatus.textContent = "Loading...";
-
-  chrome.runtime.sendMessage({
-    type: "mcp_load_config",
-    path: path
-  }, function (response) {
-    loadBtn.disabled = false;
-
-    if (chrome.runtime.lastError) {
-      configStatus.className = "status error";
-      configStatus.textContent = "Extension error: " + chrome.runtime.lastError.message;
+function loadServers() {
+  chrome.runtime.sendMessage({ type: "mcp_get_servers" }, function (response) {
+    if (chrome.runtime.lastError || !response) {
+      // Native host not available, try cached
+      chrome.storage.local.get(["mcpServers"], function (data) {
+        renderServerList(data.mcpServers || []);
+      });
       return;
     }
-
-    if (!response) {
-      configStatus.className = "status error";
-      configStatus.textContent = "No response from background.";
-      return;
-    }
-
-    if (response.error) {
-      configStatus.className = "status error";
-      configStatus.textContent = response.error;
-      return;
-    }
-
-    configStatus.className = "status success";
-    configStatus.textContent = response.servers.length + " server(s) found.";
-
-    chrome.storage.local.set({ mcpConfigPath: path });
-
-    chrome.storage.local.get(["mcpServerToggles"], function (data) {
-      renderServerList(response.servers, data.mcpServerToggles || {});
-    });
+    renderServerList(response.servers || []);
   });
-});
+}
 
-configPathInput.addEventListener("keydown", function (e) {
-  if (e.key === "Enter") loadBtn.click();
-});
-
-// --- Render Server List ---
-
-function renderServerList(servers, toggles) {
+function renderServerList(servers) {
   serverListEl.innerHTML = "";
 
   if (!servers || servers.length === 0) {
-    serverListEl.innerHTML = '<div class="empty-state">No servers found in config.</div>';
+    serverListEl.innerHTML = '<div class="empty-state">No servers configured.</div>';
     return;
   }
 
   servers.forEach(function (server) {
-    var enabled = toggles[server.name] !== false; // default ON
-
     var item = document.createElement("div");
     item.className = "server-item";
 
     var transport = server.transport || "stdio";
     var detail = transport === "http" ? server.url : server.command;
+    var statusDot = server.running ? "dot-ok" : "dot-off";
 
     item.innerHTML =
       '<div class="server-info">' +
-        '<div class="server-name">' + escapeHtml(server.name) + '</div>' +
-        '<div class="server-meta">' + escapeHtml(transport) + ' \u00b7 ' + escapeHtml(detail || "") + '</div>' +
+        '<span class="dot ' + statusDot + '"></span>' +
+        '<div>' +
+          '<div class="server-name">' + escapeHtml(server.name) + '</div>' +
+          '<div class="server-meta">' + escapeHtml(detail || transport) + '</div>' +
+        '</div>' +
       '</div>' +
-      '<label class="toggle">' +
-        '<input type="checkbox" data-server="' + escapeHtml(server.name) + '"' + (enabled ? " checked" : "") + '>' +
-        '<span class="toggle-slider"></span>' +
-      '</label>';
+      '<button class="remove-btn" data-server="' + escapeHtml(server.name) + '" title="Remove">&times;</button>';
 
     serverListEl.appendChild(item);
   });
 
-  // Toggle handlers
-  serverListEl.querySelectorAll('input[type="checkbox"]').forEach(function (checkbox) {
-    checkbox.addEventListener("change", function () {
-      var serverName = this.getAttribute("data-server");
-      var isEnabled = this.checked;
+  // Remove handlers
+  serverListEl.querySelectorAll(".remove-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var name = this.getAttribute("data-server");
+      chrome.runtime.sendMessage({
+        type: "mcp_remove_server",
+        name: name
+      }, function () {
+        loadServers();
+      });
+    });
+  });
+}
 
-      chrome.storage.local.get(["mcpServerToggles"], function (data) {
-        var toggles = data.mcpServerToggles || {};
-        toggles[serverName] = isEnabled;
-        chrome.storage.local.set({ mcpServerToggles: toggles });
+// --- Add Server Form ---
 
-        // Notify background to update Clay tabs
-        chrome.runtime.sendMessage({
-          type: "mcp_server_toggle",
-          server: serverName,
-          enabled: isEnabled
+addServerBtn.addEventListener("click", function () {
+  addForm.classList.remove("hidden");
+  serverNameInput.value = "";
+  serverPackageInput.value = "";
+  envFieldsEl.innerHTML = "";
+  serverNameInput.focus();
+});
+
+cancelAddBtn.addEventListener("click", function () {
+  addForm.classList.add("hidden");
+});
+
+addEnvBtn.addEventListener("click", function () {
+  addEnvRow("", "");
+});
+
+function addEnvRow(key, value) {
+  var row = document.createElement("div");
+  row.className = "env-row";
+  row.innerHTML =
+    '<input type="text" class="env-key" placeholder="KEY" value="' + escapeHtml(key) + '" spellcheck="false">' +
+    '<input type="text" class="env-val" placeholder="value" value="' + escapeHtml(value) + '" spellcheck="false">' +
+    '<button class="env-remove" title="Remove">&times;</button>';
+  row.querySelector(".env-remove").addEventListener("click", function () {
+    row.remove();
+  });
+  envFieldsEl.appendChild(row);
+}
+
+saveServerBtn.addEventListener("click", function () {
+  var name = serverNameInput.value.trim();
+  var pkg = serverPackageInput.value.trim();
+  if (!name || !pkg) return;
+
+  var env = {};
+  envFieldsEl.querySelectorAll(".env-row").forEach(function (row) {
+    var k = row.querySelector(".env-key").value.trim();
+    var v = row.querySelector(".env-val").value.trim();
+    if (k) env[k] = v;
+  });
+
+  chrome.runtime.sendMessage({
+    type: "mcp_add_server",
+    name: name,
+    command: "npx",
+    args: ["-y", pkg],
+    env: env
+  }, function (response) {
+    if (chrome.runtime.lastError || (response && response.error)) {
+      return;
+    }
+    addForm.classList.add("hidden");
+    loadServers();
+  });
+});
+
+// --- Import External Config ---
+
+importBtn.addEventListener("click", function () {
+  var path = importPathInput.value.trim();
+  if (!path) return;
+
+  chrome.runtime.sendMessage({
+    type: "mcp_import_config",
+    path: path
+  }, function (response) {
+    if (chrome.runtime.lastError || !response) {
+      importStatus.className = "status error";
+      importStatus.textContent = "Failed to reach native host.";
+      return;
+    }
+    if (response.error) {
+      importStatus.className = "status error";
+      importStatus.textContent = response.error;
+      return;
+    }
+    importStatus.className = "status success";
+    importStatus.textContent = (response.count || 0) + " server(s) imported.";
+    importPathInput.value = "";
+    loadServers();
+    loadImportedPaths();
+  });
+});
+
+importPathInput.addEventListener("keydown", function (e) {
+  if (e.key === "Enter") importBtn.click();
+});
+
+function loadImportedPaths() {
+  chrome.runtime.sendMessage({ type: "mcp_get_imports" }, function (response) {
+    if (chrome.runtime.lastError || !response || !response.paths) {
+      importedPathsEl.innerHTML = "";
+      return;
+    }
+    importedPathsEl.innerHTML = "";
+    response.paths.forEach(function (p) {
+      var tag = document.createElement("div");
+      tag.className = "import-tag";
+      tag.innerHTML = '<span class="import-path">' + escapeHtml(p) + '</span>'
+        + '<button class="import-remove" data-path="' + escapeHtml(p) + '">&times;</button>';
+      tag.querySelector(".import-remove").addEventListener("click", function () {
+        chrome.runtime.sendMessage({ type: "mcp_remove_import", path: p }, function () {
+          loadImportedPaths();
+          loadServers();
         });
       });
+      importedPathsEl.appendChild(tag);
     });
   });
 }
