@@ -1,12 +1,30 @@
 // Clay Chrome Extension - Content Script
 // Injected into Clay tabs. Bridges background.js <-> Clay page.
 
+// --- Safe message sender (survives extension reload) ---
+
+function safeSend(msg) {
+  try {
+    chrome.runtime.sendMessage(msg);
+  } catch (e) {
+    // Extension context invalidated (extension was reloaded).
+    // Notify Clay page so it knows the extension is disconnected.
+    window.postMessage(
+      {
+        source: "clay-chrome-extension",
+        payload: { type: "clay_ext_disconnected" },
+      },
+      "*"
+    );
+  }
+}
+
 // Register with background service worker
-chrome.runtime.sendMessage({ type: "clay_ext_register" });
+safeSend({ type: "clay_ext_register" });
 
 // Unregister on page unload
 window.addEventListener("beforeunload", function () {
-  chrome.runtime.sendMessage({ type: "clay_ext_unregister" });
+  safeSend({ type: "clay_ext_unregister" });
 });
 
 // Relay messages from background.js to Clay page
@@ -39,12 +57,5 @@ window.addEventListener("message", function (event) {
   if (!event.data || event.data.source !== "clay-page") return;
 
   var payload = event.data.payload;
-
-  // MCP messages from Clay page -> background (tool calls, tools list)
-  if (payload.type === "mcp_tool_call" || payload.type === "mcp_tools_list") {
-    chrome.runtime.sendMessage(payload);
-    return;
-  }
-
-  chrome.runtime.sendMessage(payload);
+  safeSend(payload);
 });
