@@ -33,33 +33,52 @@ chrome.tabs.onUpdated.addListener(function (tabId, changeInfo) {
   }
 });
 
+// Clay tab URL patterns (must match manifest content_scripts.matches)
+var CLAY_URL_PATTERNS = [
+  /^https?:\/\/[^/]*\.clay\.studio\//,
+  /^https?:\/\/localhost(:\d+)?\//,
+  /^https?:\/\/127\.0\.0\.1(:\d+)?\//
+];
+
+function isClayUrl(url) {
+  if (!url) return false;
+  for (var i = 0; i < CLAY_URL_PATTERNS.length; i++) {
+    if (CLAY_URL_PATTERNS[i].test(url)) return true;
+  }
+  return false;
+}
+
 function isClayTab(tab) {
-  // Only exclude tabs where the content script is actively registered
-  // (i.e. the tab that is running Clay and bridging to this extension)
-  return clayTabIds.has(tab.id);
+  return isClayUrl(tab.url);
 }
 
 function broadcastTabList() {
   chrome.tabs.query({}, function (tabs) {
-    allTabs = tabs
-      .filter(function (t) {
-        return !isClayTab(t);
-      })
-      .map(function (t) {
-        return {
-          id: t.id,
-          url: t.url || "",
-          title: t.title || "",
-          favIconUrl: t.favIconUrl || "",
-        };
-      });
+    // Separate Clay tabs from non-Clay tabs
+    var clayTabs = [];
+    allTabs = [];
 
-    for (var clayTabId of clayTabIds) {
-      chrome.tabs.sendMessage(clayTabId, {
+    for (var i = 0; i < tabs.length; i++) {
+      if (isClayTab(tabs[i])) {
+        clayTabs.push(tabs[i].id);
+        // Also keep clayTabIds in sync
+        clayTabIds.add(tabs[i].id);
+      } else {
+        allTabs.push({
+          id: tabs[i].id,
+          url: tabs[i].url || "",
+          title: tabs[i].title || "",
+          favIconUrl: tabs[i].favIconUrl || "",
+        });
+      }
+    }
+
+    for (var j = 0; j < clayTabs.length; j++) {
+      chrome.tabs.sendMessage(clayTabs[j], {
         type: "clay_ext_tab_list",
         tabs: allTabs,
       }).catch(function () {
-        // Tab may have been closed, ignore
+        // Tab may have closed or content script not ready
       });
     }
   });
