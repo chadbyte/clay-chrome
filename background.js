@@ -668,29 +668,7 @@ function mcpCheckHost(sendResponse) {
 function mcpRelayToolCall(msg, clayTabId) {
   var serverName = msg.server;
 
-  // Check if server is a local HTTP server (handle directly from webapp)
-  var server = mcpServers.find(function (s) { return s.name === serverName; });
-  if (!server) {
-    sendToClayTab(clayTabId, {
-      type: "mcp_tool_result",
-      callId: msg.callId,
-      error: "Unknown MCP server: " + serverName
-    });
-    return;
-  }
-
-  // HTTP servers are called directly from webapp, shouldn't reach here
-  // But handle gracefully if they do
-  if (server.transport === "http") {
-    sendToClayTab(clayTabId, {
-      type: "mcp_tool_result",
-      callId: msg.callId,
-      error: "HTTP MCP servers should be called directly from webapp via fetch"
-    });
-    return;
-  }
-
-  // stdio server: relay through native host
+  // Relay to native host (it knows which servers are running)
   mcpSendNative({
     type: "mcp_request",
     server: serverName,
