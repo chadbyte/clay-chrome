@@ -7,7 +7,9 @@ var port = null;
 function connectPort() {
   try {
     port = chrome.runtime.connect({ name: "clay-tab" });
+    console.log("[clay-ext] port connected");
   } catch (e) {
+    console.log("[clay-ext] port connect failed:", e.message);
     return;
   }
 
@@ -23,7 +25,8 @@ function connectPort() {
   });
 
   port.onDisconnect.addListener(function () {
-    void chrome.runtime.lastError;
+    var err = chrome.runtime.lastError;
+    console.log("[clay-ext] port disconnected", err ? err.message : "");
     port = null;
     // Notify Clay page that extension disconnected
     window.postMessage(
