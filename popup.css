@@ -167,8 +167,20 @@ h1 {
 }
 .dot-ok { background: var(--green); }
 .dot-off { background: var(--text-dimmer); }
+.dot-starting { background: var(--accent); animation: pulse 1s infinite; }
 .dot-error { background: var(--red); }
 .dot-unknown { background: var(--text-dimmer); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.starting-text {
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 400;
+}
 
 /* --- Server List --- */
 

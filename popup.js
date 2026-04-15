@@ -52,13 +52,14 @@ function renderServerList(servers) {
 
     var transport = server.transport || "stdio";
     var detail = transport === "http" ? server.url : server.command;
-    var statusDot = server.running ? "dot-ok" : "dot-off";
+    var statusDot = server.running ? "dot-ok" : "dot-starting";
+    var statusText = server.running ? "" : '<span class="starting-text">Starting...</span>';
 
     item.innerHTML =
       '<div class="server-info">' +
         '<span class="dot ' + statusDot + '"></span>' +
         '<div>' +
-          '<div class="server-name">' + escapeHtml(server.name) + '</div>' +
+          '<div class="server-name">' + escapeHtml(server.name) + ' ' + statusText + '</div>' +
           '<div class="server-meta">' + escapeHtml(detail || transport) + '</div>' +
         '</div>' +
       '</div>' +
@@ -146,8 +147,29 @@ saveServerBtn.addEventListener("click", function () {
     }
     addForm.classList.add("hidden");
     loadServers();
+    // Poll until server is ready
+    pollUntilReady(name, 20);
   });
 });
+
+function pollUntilReady(name, retries) {
+  if (retries <= 0) return;
+  setTimeout(function () {
+    chrome.runtime.sendMessage({ type: "mcp_get_servers" }, function (response) {
+      if (chrome.runtime.lastError || !response) return;
+      var servers = response.servers || [];
+      var found = false;
+      for (var i = 0; i < servers.length; i++) {
+        if (servers[i].name === name && servers[i].running) {
+          found = true;
+          break;
+        }
+      }
+      renderServerList(servers);
+      if (!found) pollUntilReady(name, retries - 1);
+    });
+  }, 2000);
+}
 
 // --- Import External Config ---
 
