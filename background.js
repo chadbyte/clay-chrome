@@ -140,7 +140,10 @@ chrome.runtime.onConnect.addListener(function (port) {
   clayPorts[tabId] = port;
   clayTabIds.add(tabId);
   broadcastTabList();
-  broadcastMcpServers();
+  // Auto-connect native host when a Clay tab connects (no popup needed)
+  if (!mcpNativePort) mcpConnectNativeHost();
+  // Brief delay to let native host initialize before fetching server list
+  setTimeout(broadcastMcpServers, mcpNativePort ? 100 : 500);
 
   port.onMessage.addListener(function (msg) {
     // Command from Clay page (relayed by content script)
@@ -708,6 +711,10 @@ function mcpRelayToolsList(msg, clayTabId) {
 // --- Broadcast MCP server list to all Clay tabs ---
 
 function broadcastMcpServers() {
+  // Auto-connect native host if not connected and Clay tabs exist
+  if ((!mcpHostConnected || !mcpNativePort) && Object.keys(clayPorts).length > 0) {
+    mcpConnectNativeHost();
+  }
   if (!mcpHostConnected || !mcpNativePort) {
     broadcastToClayTabs({
       type: "mcp_servers_available",
